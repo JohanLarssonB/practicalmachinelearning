@@ -1,0 +1,127 @@
+---
+title: "Practical Machine Learning Project"
+author: "Johan Larsson B"
+date: "26 december 2015"
+output: html_document
+---
+
+# Summary
+
+This report describes the Course Project Writeup assignment as part of the Coursera Practical Machine Learning course. The task is to use Machine Learning to classify exercises from fitness device data, collected and classified by a group of enthusiasts. The group of six participants had accelerometers on the belt, forearm, arm, and dumbell and performed barbell lifts correctly and incorrectly in five different ways. After cleaning the data, a Random Forest model with 0.79% out-of-sample rate is selected for prediction of the exercises in the testing data.
+
+# Getting and Cleaning Data
+
+The [training](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and [test](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv) data were downloaded to local folder, to avoid accessing the server multiple times, before it was loaded. 
+
+```{r loading, cache = TRUE}
+setwd("~/Coursera/The Data Science Specialization/8 Practical Machine Learning/Project/")
+rawtraining <- read.csv("pml-training.csv", header = TRUE, sep = ",")
+rawtesting <- read.csv("pml-testing.csv", header = TRUE, sep = ",")
+```
+
+The training data contains `r dim(rawtraining)[1]` rows and `r dim(rawtraining)[2]` columns. Running the summary function on the first 19 columns of the training and testing sets gives a hinch about the data.
+
+```{r summary}
+summary(rawtraining[ , 1:19])
+summary(rawtesting[ , 1:19])
+```
+The first column (X) contains an index to each row in the file and is not relevant for the classification. No time window analysis will be done, so the "time" columns are also obsolete. Next, the new_window is mostly empty in the training data, and since it is completely empty in the testing data it can be removed. The num_window column is most likely an artifact from post-processing of the data, and may on it's own serve as a single predictor in a model, which is kind of cheating even though fully alllowed to be used according to the instructions.A great number of variables are mainly either empty or contain mainly NAs, and seem to be aggregated data of other records. In the testing data these variables are either empty or contain only NAs, so these are removed as well. These aggregated variables start with "min_", "max_", "kurtosis_", "skewness_", "var_", "avg_", "stdev_" and "amplitude_".
+
+```{r cleaning, cache = TRUE}
+not_columns <- grep("^X|min_|max_|new_|num_|avg_|var_|stddev_|kurtosis_|skewness_|amplitude_|.*_timestamp", colnames(rawtraining), perl = TRUE, value = FALSE)
+rows <- is.na(rawtraining$max_roll_belt)
+training <- rawtraining[rows, -not_columns]
+colnames(training)
+```
+
+The cleaned data has `r dim(training)[1]` rows and `r dim(training)[2]` columns.
+
+# Evaluate Machine Learning algorithms
+
+## Preparations
+
+Load the required packages, e.g caret.
+
+```{r ml_libraries, message = FALSE}
+library(caret)
+library(ggplot2)
+library(rpart)
+library(rattle)
+```
+
+Divide training into train and test set using the train/test proportions 60/40.
+
+```{r partioning, cache = TRUE}
+set.seed(1234)
+inTrain <- createDataPartition(y=training$classe, p=0.6, list=FALSE)
+train <- training[inTrain, ]; test <- training[-inTrain, ]
+```
+
+## Modeling with Trees
+
+The first approach is to use a classification tree model.
+
+```{r tree_model, cache = TRUE}
+set.seed(1234)
+modFit_rpart <- train(classe ~ ., data = train, method = "rpart")
+fancyRpartPlot(modFit_rpart$finalModel, main = "Classification Tree", sub="")
+pred_rpart <- predict(modFit_rpart, newdata = test)
+cm_rpart <- confusionMatrix(pred_rpart, test$classe); cm_rpart
+```
+
+This model does not perform very well with almost `r (1 - cm_rpart$overall[1])*100`% out-of-sample errors.
+
+## Modeling with Random Forests
+
+The second approach is to use a Random Forests model. As a starting point, the deafult options is used for bootstrapping and pre-processing like Principal Component Analysis (PCA) is not used either.
+
+```{r rf_model, cache = TRUE}
+set.seed(1234)
+modFit_rf <- train(classe ~ ., data = train, method = "rf")
+modFit_rf$finalModel
+pred_rf <- predict(modFit_rf, newdata = test)
+cm_rf <- confusionMatrix(pred_rf, test$classe); cm_rf
+```
+
+The out-of-sample errors for this model is `r (1 - cm_rf$overall[1])*100`%. This is good enough for prediction of 20 samples, so no attempt is made to improve the model by altering the default options in the training, to perform PCA or to redo the training with the entire training data set.
+
+## Modeling with num_window as single predictor
+
+In the data cleaning phase, the num_window variable was excluded as a predictor due to the suspicion that it was an artifact of the data collection and highly correlated with the classe variable.
+
+```{r rf_sp_model, cache = TRUE, message = FALSE, warnings = FALSE}
+columns_sp <- grep("^num_|new_|classe", colnames(rawtraining), perl = TRUE, value = FALSE)
+training_sp <- rawtraining[rows, columns_sp]
+set.seed(1234)
+inTrain_sp <- createDataPartition(y=training_sp$classe, p=0.6, list=FALSE)
+train_sp <- training_sp[inTrain_sp, ]; test_sp <- training_sp[-inTrain_sp, ]
+set.seed(1234)
+modFit_rf_sp <- train(classe ~ ., data = train_sp, method = "rf")
+pred_rf_sp <- predict(modFit_rf_sp, newdata = test_sp)
+cm_rf_sp <- confusionMatrix(pred_rf_sp, test_sp$classe); cm_rf_sp
+```
+
+The out-of-sample errors is `r (1 - cm_rf_sp$overall[1])*100`%, i.e. almost perfect classification, which confirms the suspicion that this is highly correlated with the classe variable. USing this as a predictor in the model would lead to problems when predicting the classe variable on new data.
+
+# Prediction for the Course Project Submission
+
+The prediction of the classe variable in the pm-testing.csv is done using the Random Forests model.
+
+```{r prediction, cache = TRUE}
+testing <- rawtesting[rows, -not_columns]
+pred_subm <- predict(modFit_rf, newdata = testing)
+```
+
+The files for the Course Project submission is generated using the code supplemented in the assignment.
+
+```{r submission, cache = TRUE}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+answers <- as.character(pred_subm); answers
+pml_write_files(answers)
+```
